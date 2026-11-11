@@ -4,9 +4,14 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildCourse,
+  buildCourseSurface,
+  disposeCourse,
   frameFromTravel,
   garbageCanRaceYaw,
   gravacrestYaw,
+  laneOffset,
+  sampleCourse,
   validateCourse,
 } from "../src/course.js";
 
@@ -181,4 +186,75 @@ test("an overpass crossing is accepted and a flat crossing is not", () => {
     crossings: [{ sA: first.s, sB: second.s }],
   });
   assert.equal(kindsOf(declared).has("accidental-self-intersection"), false, JSON.stringify(declared.findings));
+});
+
+test("one seed always builds the same course", () => {
+  const first = buildCourse({ seed: 42, kind: "circuit" });
+  const second = buildCourse({ seed: 42, kind: "circuit" });
+  assert.deepEqual(first.samples, second.samples);
+  assert.notDeepEqual(first.samples, buildCourse({ seed: 43, kind: "circuit" }).samples);
+  for (const kind of ["circuit", "open", "figure-eight"]) {
+    const course = buildCourse({ seed: 7, kind });
+    assert.equal(validateCourse(course).ok, true, kind);
+    assert.equal(course.units, "meters");
+    assert.equal(course.closed, kind !== "open");
+  }
+});
+
+test("open travel starts along -Z and lanes are left then right", () => {
+  const course = buildCourse({ seed: 3, kind: "open", sampleCount: 32 });
+  const start = sampleCourse(course, 0);
+  const later = sampleCourse(course, 20);
+  assert.ok(later.position.z < start.position.z);
+  assert.ok(Math.abs(start.forward.x) < 0.05);
+  assert.ok(start.forward.z < -0.9);
+  assert.ok(Math.abs(start.yawGarbageCanRace) < 1e-6);
+  assert.ok(laneOffset(course, 0, 2) < 0);
+  assert.ok(laneOffset(course, 1, 2) > 0);
+  const closed = buildCourse({ seed: 3, kind: "circuit" });
+  const seam = sampleCourse(closed, closed.length);
+  const origin = sampleCourse(closed, 0);
+  assert.ok(Math.abs(seam.position.x - origin.position.x) < 1e-6);
+  assert.ok(Math.abs(seam.position.z - origin.position.z) < 1e-6);
+
+  const surface = buildCourseSurface(course, { segmentCount: 16 });
+  const positions = surface.geometry.attributes.position.array;
+  const vertex = 16 * 2;
+  const endX = (positions[vertex * 3] + positions[(vertex + 1) * 3]) / 2;
+  const endZ = (positions[vertex * 3 + 2] + positions[(vertex + 1) * 3 + 2]) / 2;
+  const end = sampleCourse(course, course.length).position;
+  assert.ok(Math.hypot(endX - end.x, endZ - end.z) < 1e-4);
+  assert.ok(Math.hypot(endX - start.position.x, endZ - start.position.z) > 10);
+  disposeCourse(course);
+});
+
+test("the road ribbon faces up and disposal releases it once", () => {
+  const course = buildCourse({ seed: 9, kind: "circuit", sampleCount: 48 });
+  const surface = buildCourseSurface(course, { segmentCount: 24 });
+  const positions = surface.geometry.attributes.position.array;
+  const index = surface.geometry.index.array;
+  const ax = positions[index[0] * 3];
+  const az = positions[index[0] * 3 + 2];
+  const bx = positions[index[1] * 3];
+  const bz = positions[index[1] * 3 + 2];
+  const cx = positions[index[2] * 3];
+  const cz = positions[index[2] * 3 + 2];
+  const normalY = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+  assert.ok(normalY > 0);
+  const sample = sampleCourse(course, 0);
+  const rightX = positions[3] - sample.position.x;
+  const rightZ = positions[5] - sample.position.z;
+  const along = rightX * sample.right.x + rightZ * sample.right.z;
+  assert.ok(along > course.halfWidth * 0.95);
+  let disposed = 0;
+  const original = surface.geometry.dispose.bind(surface.geometry);
+  surface.geometry.dispose = () => {
+    disposed += 1;
+    original();
+  };
+  disposeCourse(course);
+  assert.equal(disposed, 1);
+  disposeCourse(course);
+  assert.equal(disposed, 1);
+  assert.throws(() => sampleCourse(course, 0), /disposed/);
 });
