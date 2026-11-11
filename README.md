@@ -4,13 +4,13 @@
 
 ## Ownership
 
-Arcade owns reusable game rules and lifecycle: seeded courses, lanes, and map validation (`./course`), progress, laps, gaps, standings and finish (`./racing`), audio lifecycle (`./audio`), and `./presentation` (in-world name tags, appearance on game meshes, and the lifecycle of remote players' presentation). Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and the curve/surface primitives a road ribbon is built from. Games own their worlds, themes, buildings, trackside art, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. No module has a backend dependency or creates cloud resources or recurring cost. Character geometry, wardrobe assets and identity policy (name uniqueness, storage, moderation) stay in the game; the lobby and its dresser are Magna's.
+Arcade owns reusable game rules and lifecycle: seeded courses, lanes, and map validation (`./course`), progress, laps, gaps, standings and finish (`./racing`), audio lifecycle (`./audio`), `./presentation` (in-world name tags, appearance on game meshes, and the lifecycle of remote players' presentation), and `./entry` (prepare, entered, countdown, start and leave over Magna's released handoff). Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and the curve/surface primitives a road ribbon is built from. Games own their worlds, themes, buildings, trackside art, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. No module has a backend dependency or creates cloud resources or recurring cost. Character geometry, wardrobe assets and identity policy (name uniqueness, storage, moderation) stay in the game; the lobby and its dresser are Magna's.
 
 The owner-approved foundation is recorded in ticket `2026-11-09-arcade-library-foundation` (private backlog `Rick-Boardman/nexus`, file `backlog/tickets/<state>/2026-11-09-arcade-library-foundation.md`).
 
 ## Use
 
-Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-arcade#vX.Y.Z"` and replace `vX.Y.Z` with that tag. Package version 0.4.0 adds the racing module over the course contract released in v0.3.0; the tag is cut from the merged pull request. Browser ESM is shipped directly; no consumer bundler is required. Map each subpath to installed source:
+Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-arcade#vX.Y.Z"` and replace `vX.Y.Z` with that tag. Package version 0.5.0 adds game entry over the racing contract released in v0.4.0; the tag is cut from the merged pull request. Browser ESM is shipped directly; no consumer bundler is required. Map each subpath to installed source:
 
 ```html
 <script type="importmap">
@@ -19,7 +19,8 @@ Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-a
     "@rb/arcade/audio": "./node_modules/@rb/arcade/src/audio.js",
     "@rb/arcade/presentation": "./node_modules/@rb/arcade/src/presentation.js",
     "@rb/arcade/course": "./node_modules/@rb/arcade/src/course.js",
-    "@rb/arcade/racing": "./node_modules/@rb/arcade/src/racing.js"
+    "@rb/arcade/racing": "./node_modules/@rb/arcade/src/racing.js",
+    "@rb/arcade/entry": "./node_modules/@rb/arcade/src/entry.js"
   }
 }
 </script>
@@ -244,6 +245,39 @@ Equal race distances or finish times use `tieBreak(a, b)`, an optional standard 
 
 Invalid numbers, rules, IDs, unknown racers and decreasing timestamps throw with `arcade/racing:`. Invalid updates leave the ledger unchanged. The module imports no physics, renderer, transport or clock and holds no listeners, timers, or GPU resources: no disposal is needed. `reset` releases its racer entries; dropping the ledger releases all remaining state. Its course geometry snapshot survives the game's later `disposeCourse`; pure helpers reject a disposed course. Neither source game is migrated in this release.
 
+## Game entry
+
+```js
+import { createGameEntry } from '@rb/arcade/entry';
+import { createHudChatPanel } from '@rb/halo/ui/chat-panel.js';
+
+// handoff is the object Magna's lobby passes to onStart. Do not copy PlayClient.
+const entry = createGameEntry(handoff, {
+  hooks: {
+    prepare(view) {},
+    entered(view) {},
+    countdown({ startsAt, startsAtMs, late, cancelled }) {},
+    start({ startsAt, startsAtMs }) {},
+    leave({ reason }) {},
+    failure(error) {},
+  },
+});
+const panel = createHudChatPanel(hud, { transport: entry.transport });
+await entry.enter(); // after the game has loaded and the player has entered VR
+```
+
+This integrates against Magna Play lobby release `61275e8c5542` (repository `websites-www.magnacms.com` commit `2bb5142`, the merge of pull request 24). Static games load that pin at `/mfes/mfe-play/61275e8c5542/play-lobby.js`. The contract is Magna `docs/15-third-party-feature-contract.md` section 9. `onStart` receives `{identity, table, seat, chat, arrive, read}`. `table` carries `code`, `slots`, `seed`, `phase` and the shared `startsAt`. `chat` carries `roomId`, `code`, `messages()`, `say(body)` and `watch({event, snapshot, status, refused})`. That `watch` is the WebSocket. It does not expose a topic or a credential.
+
+`createGameEntry` takes that handoff as its adapter. It does not construct a client, choose an endpoint, read a credential, or decide arrival timeout or room retention. Those stay in Play. `prepare` runs synchronously from the constructor. `enter` subscribes `chat.watch` once and then calls `arrive` once. A thrown or rejected `arrive` or `watch` is passed to `failure` and rejected to the caller; it is not called again. `entered` runs after a table comes back.
+
+Countdown and cancellation arrive as socket events (`countdown` carries `startsAt`; `countdown-cancelled` clears it). An `instance` event carries the room. A socket `snapshot` calls `read()` once for the current table and `messages()` once for the transcript. A rejected read is reported and is not repeated until Play delivers another snapshot. Nothing in this module polls. Every entered player arms `start` for that same `startsAt`. A duplicate event does not arm it again. A late event, one that arrives after `startsAt`, counts down with `late: true` and starts immediately. A different `startsAt` after `start` does not move the instant. A racing or counting table with no `startsAt` is a failure and does not invent a clock. A loading read that still has an empty `startsAt` does not erase a countdown the socket already delivered. `countdown-cancelled`, or a table whose phase is `waiting`, does.
+
+`leave()` and `dispose()` unsubscribe once and call `leave` with `leave` or `disposed`. A `closed` event, this player `left` or `dropped`, a missing seat, or a refused socket also leave, with that reason. `dispose` is safe to call twice. Later `enter` rejects.
+
+`entry.transport` is the transport Halo's HUD chat panel already accepts (`src/ui/chat-panel.js`: `subscribe`, `send`, optional `nameFor`). `subscribe` yields `{messages, status, watching, hasMore}`. Messages use the panel's `{id, authorUserId, body, createdAt}` shape, which Play's room lines already have. Duplicate ids are ignored. `nameFor` uses the seat's `displayName`. The panel draws the game's private room (`chat.roomId` / `chat.code`); the lobby's 2D room list stays in Play. Arcade does not import Halo, and the panel does not open its own socket: both share the one `watch`. `send` returns `say`'s promise, including its rejection.
+
+The optional `now`, `schedule` and `cancel` arguments exist so a game can share its clock. The defaults are `Date.now` and one `setTimeout` aimed at `startsAt`, cleared if that instant changes or the player leaves. That timer is not a poll.
+
 ## Validation and device coverage
 
 Use Node 24: `npm ci`, then `npm run build`. The build syntax-checks source/tests and runs Node's test runner; `npm pack --dry-run` verifies the installable source artifact. CI runs both. There is no transpilation output.
@@ -252,7 +286,7 @@ Presentation tests use Three.js and canvas doubles to cover texture rebinding, t
 
 ## Layout
 
-`src/audio.js`, `src/presentation.js`, `src/course.js` (with `src/course/`) and `src/racing.js` are the browser ESM modules. Corresponding files in `test/` hold the Node tests, including racing seam/reverse travel, course sampling integration, finish order and configurable deterministic ties. `.github/workflows/build.yml` checks pull requests and branch pushes.
+`src/audio.js`, `src/presentation.js`, `src/course.js` (with `src/course/`), `src/racing.js` and `src/entry.js` are the browser ESM modules. Corresponding files in `test/` hold the Node tests, including racing seam/reverse travel, course sampling integration, finish order, configurable deterministic ties, and entry's shared `startsAt`, late and duplicate notices, leave, disposal and reported failures. `.github/workflows/build.yml` checks pull requests and branch pushes.
 
 ## Constraints
 
