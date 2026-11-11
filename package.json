@@ -1,0 +1,14 @@
+{
+  "name": "@rb/arcade",
+  "version": "0.1.0",
+  "description": "Shared game lifecycle modules over game-owned assets and policies",
+  "type": "module",
+  "exports": { "./audio": "./src/audio.js" },
+  "files": ["src"],
+  "scripts": {
+    "check": "node --check src/audio.js && node --check test/audio.test.js",
+    "test": "node --test",
+    "build": "npm run check && npm test"
+  },
+  "engines": { "node": ">=24" }
+}

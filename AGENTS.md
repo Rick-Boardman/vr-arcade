@@ -4,7 +4,7 @@ Workspace rules come first: `E:\projects\AGENTS.md`. Read it when you see that l
 
 `@rb/arcade` is the shared game library. It uses Halo (`@rb/halo`). The GitHub repository is public `Rick-Boardman/vr-arcade`, checked out at `nexus/vr/arcade`.
 
-There is no package and no build in this foundation commit. The full contract (ownership, install, one Three.js instance, disposal, the Magna boundary) and the first module arrive with ticket `2026-11-09-arcade-course-map`.
+The dependency-free `./audio` module owns shared audio lifecycle through adapters. Run `npm ci` and `npm run build` (syntax checks and Node tests); browser ESM source is the package output. The course/map module and its coordinate contracts arrive with ticket `2026-11-09-arcade-course-map`.
 
 Release order: a library change is a pull request with the build green, then merge, then a tag. Consumers pin that tag through `package.json` and an import map that points at `node_modules`. Never a sibling checkout path, and never edit this checkout in passing from a consumer task.
 
