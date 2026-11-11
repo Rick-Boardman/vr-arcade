@@ -4,7 +4,7 @@
 
 ## Ownership
 
-Arcade owns reusable game rules and lifecycle, starting with `./audio`. Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and curve/surface primitives. Games own their worlds, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. Audio has no scene or backend dependency and creates no cloud resources or recurring cost.
+Arcade owns reusable game rules and lifecycle: `./audio` and `./presentation` (in-world name tags, appearance on game meshes, and the lifecycle of remote players' presentation). Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and curve/surface primitives. Games own their worlds, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. Neither module has a backend dependency or creates cloud resources or recurring cost. Character geometry, wardrobe assets and identity policy (name uniqueness, storage, moderation) stay in the game; the lobby and its dresser are Magna's.
 
 The owner-approved foundation is recorded in ticket `2026-11-09-arcade-library-foundation`. Seeded courses, map validation and their coordinate contracts arrive separately with `2026-11-09-arcade-course-map`. The backlog lives in the private `Rick-Boardman/nexus` repository at `backlog/tickets/<state>/<ticket>.md`.
 
@@ -14,11 +14,14 @@ After this PR is merged, the reviewer creates a release tag before any consumer 
 
 ```html
 <script type="importmap">
-{"imports":{"@rb/arcade/audio":"./node_modules/@rb/arcade/src/audio.js"}}
+{"imports":{
+  "@rb/arcade/audio":"./node_modules/@rb/arcade/src/audio.js",
+  "@rb/arcade/presentation":"./node_modules/@rb/arcade/src/presentation.js"
+}}
 </script>
 ```
 
-A sibling checkout path is not a dependency. Keep a single Three.js instance through Halo's peer dependency; this audio module neither pins nor imports Three.js.
+A sibling checkout path is not a dependency. Keep a single Three.js instance through Halo's peer dependency; neither module pins nor imports Three.js (presentation takes the game's `THREE` as an argument).
 
 ## Audio API
 
@@ -91,15 +94,75 @@ const adapter = {
 
 These are interface sketches, not implementations. Natural-end disposal must not throw from an event callback; adapters must make that path reliable. Start, mix and explicit cleanup failures surface to the caller. Custom adapters must also prevent delayed start completion from resurrecting stopped playback. No game-specific sound, licence, loading URL, motion mapping or cue planner moves into Arcade. Neither existing consumer is migrated by this change.
 
+## Presentation API
+
+```js
+import * as THREE from 'three'; // the game's copy, through Halo's peer dependency
+import { createNameTag, createAppearance, createRemotePresentation } from '@rb/arcade/presentation';
+```
+
+Ownership is the contract: the module disposes only what it created (a tag's sprite material and canvas textures, the material clones an appearance makes). Meshes, geometries, materials and characters the game passes in are never disposed by it; remote characters go back to the game's `release` hook.
+
+### Name tags
+
+`createNameTag(THREE, options)` returns `{object, text, disposed, setText, placeAbove, dispose}`. `object` is a camera-facing `THREE.Sprite` whose origin is its bottom centre, so placing it at a crown point hangs the text above the head.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `createCanvas()` | `document.createElement('canvas')` | Canvas source. Required outside a browser document (it throws otherwise). |
+| `format(value)` | `cleanDisplayName` | Turns the game's name into display text: collapses whitespace, trims, caps at `maxLength` (24). |
+| `height` | `0.34` | World height of the label; width follows the text. |
+| `fontSize`, `fontFamily`, `fontWeight`, `fill`, `stroke`, `name` | `72`, `system-ui, sans-serif`, `700`, `#f6e7b8`, dark outline, `'name-tag'` | Paint style and sprite name. |
+
+- `setText(value)` repaints only when the formatted text changes. A changed ink size binds a new `CanvasTexture` and disposes the previous one (WebGL2 keeps a canvas texture's first upload size). Empty text hides the tag.
+- `placeAbove(target, {lift = 0.06, visible = true})` puts the tag at the top centre of `target`'s world bounding box plus `lift`, in world up, expressed in the tag's parent frame, so a tilted body does not tilt the label. The tag must already have a parent. It returns whether the tag is shown (false for empty text, `visible: false`, or empty bounds).
+- `dispose()` removes the sprite from its parent and disposes its material and texture, once. Later `setText`/`placeAbove` throw.
+
+`cleanDisplayName(value, {maxLength})`, `nameTagScale(w, h, height)` and `paintNameTag(canvas, text, style)` are exported for games that paint their own labels.
+
+### Appearance on game meshes
+
+`createAppearance({resolve})` applies appearance data `{[part]: {color?, visible?}}` to the objects `resolve(part)` returns (one `Object3D` or an array; nothing throws). Colours are hex numbers.
+
+- `apply(appearance)` sets `visible` on each resolved object and writes `color` to every mesh material under it. The first colour write on a mesh replaces its material with a clone (each element of a material array is cloned), so a material the game shares between meshes or players is never changed. Later writes reuse the clone. Materials must have `clone()` and `color.setHex()`.
+- `reset()` puts back the game's original materials and visibility and disposes the clones. `dispose()` is a final `reset()`; later `apply` throws. `ownedMaterials` counts live clones.
+- Call `reset()` or `dispose()` before the game disposes or rebuilds those meshes.
+
+Which parts exist, their names, and what a look means (wardrobe tables, dresser choices, defaults, saved looks) stay game data. A look that needs different geometry is a new character from the game's builder, which is what the remote lifecycle below does on a look change. `appearanceKey(look)` is a key-order-independent string for look data.
+
+### Remote players
+
+`createRemotePresentation(options)` keeps one presentation per remote id, rebuilds it when the look key changes, blends poses between network updates, hides players that leave the live set, and can keep a name tag above each one.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `parent` | required | `Object3D` the characters' roots are added to. |
+| `create(id, look)` | required | The game builds a character and returns at least `{root}`. Called again only when the look key changes. |
+| `place(presentation, pose, context, id)` | required | The game positions the character for the blended pose (course sampling, animation). |
+| `release(presentation, id)` | `presentation.dispose?.()` | The game releases a character the module dropped. The module only removes `root` from its parent first. |
+| `lookOf(pose, id)` / `lookKey(look, id)` | `pose.look` / `appearanceKey` | Where the look lives in a pose, and its identity. |
+| `lerp(from, to, t)` | snap to `to` | The game's pose blend, `t` in `[0, 1]`. |
+| `blendMs` | `50` | Blend window per update. |
+| `nameOf(pose, id)` | `pose.displayName` | Name text for the tag. |
+| `nameTag` | none | `{THREE, anchor(presentation, id), lift, ...createNameTag options}`; the module owns one tag per remote. |
+
+- `show(id, pose, now, {snap})` records an update at `now` (finite milliseconds). A mid-blend update starts from the pose on screen. On a look change the new character is built first (a throwing `create` leaves the current one in place), keeps the old visibility and name tag, and then the old one is released.
+- `retain(liveIds)` hides every remote not listed and forgets its pose; its character stays built for a quick return.
+- `place(now, context)` shows and places every remote with a pose, then sets and places its name tag.
+- `poses(now)` returns the blended poses with `id`, the same ones `place` draws, for collision checks.
+- `remove(id)` and `clear()` release characters to the game and dispose their tags. `clear()` tries every release and throws an `AggregateError` of the failures. `dispose()` clears once; afterwards `show`, `retain`, `place`, `poses` and `remove` throw. `get(id)`, `ids()` and `size` inspect it.
+
+The module installs no listeners and runs no frame loop: the game calls `place` from Halo's frame loop. The party transport, slot assignment and pose schema stay in the game and Magna. No consumer is migrated by this change; garbage-can-race's `name-tag.js`, `looks.js` and `remotes.js` map onto `createNameTag`, its own wardrobe data with `createAppearance`, and `createRemotePresentation` with its rider builder as `create` and its course placement as `place`.
+
 ## Validation and device coverage
 
 Use Node 24: `npm ci`, then `npm run build`. The build syntax-checks source/tests and runs Node's test runner; `npm pack --dry-run` verifies the installable source artifact. CI runs both. There is no transpilation output.
 
-Automated tests exercise lifecycle and injected browser API doubles, including refused gesture unlock, suspended contexts, media play rejection, pending starts, loop shutdown, end cleanup and owned/borrowed context disposal. No real phone (iOS/Safari or Android/Chrome) or Quest headset has been checked for audio output, gesture permission, XR input, background/resume interruption, hardware mute, or codec support. Those checks remain for release/adoption testing and must not be inferred from mocks or a desktop browser.
+Presentation tests use Three.js and canvas doubles to cover texture rebinding, tag placement, clone-only colouring, rebuilds on a look change, hiding, release, and that only module-owned sprites, materials and textures are disposed; no browser has rendered a tag yet. Audio tests exercise lifecycle and injected browser API doubles, including refused gesture unlock, suspended contexts, media play rejection, pending starts, loop shutdown, end cleanup and owned/borrowed context disposal. No real phone (iOS/Safari or Android/Chrome) or Quest headset has been checked for audio output, gesture permission, XR input, background/resume interruption, hardware mute, or codec support. Those checks remain for release/adoption testing and must not be inferred from mocks or a desktop browser.
 
 ## Layout
 
-`src/audio.js` is the browser ESM module, `test/audio.test.js` contains lifecycle/adapter tests, and `.github/workflows/build.yml` checks pull requests and branch pushes.
+`src/audio.js` and `src/presentation.js` are the browser ESM modules, `test/audio.test.js` and `test/presentation.test.js` hold their tests, and `.github/workflows/build.yml` checks pull requests and branch pushes.
 
 ## Constraints
 

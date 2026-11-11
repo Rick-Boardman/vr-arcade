@@ -1,12 +1,15 @@
 {
   "name": "@rb/arcade",
-  "version": "0.1.0",
-  "description": "Shared game lifecycle modules over game-owned assets and policies",
+  "version": "0.2.0",
+  "description": "Shared game lifecycle modules (audio, player presentation) over game-owned assets and policies",
   "type": "module",
-  "exports": { "./audio": "./src/audio.js" },
+  "exports": {
+    "./audio": "./src/audio.js",
+    "./presentation": "./src/presentation.js"
+  },
   "files": ["src"],
   "scripts": {
-    "check": "node --check src/audio.js && node --check test/audio.test.js",
+    "check": "node --check src/audio.js && node --check src/presentation.js && node --check test/audio.test.js && node --check test/presentation.test.js",
     "test": "node --test",
     "build": "npm run check && npm test"
   },
