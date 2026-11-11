@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import {
   buildCourse,
   buildCourseSurface,
@@ -16,6 +17,8 @@ import {
 } from "../src/course.js";
 
 const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "gravacrest-sweep.json");
+const haloRequire = createRequire(import.meta.resolve("@rb/halo/curve-surface"));
+const { BufferGeometry } = await import(pathToFileURL(path.join(path.dirname(haloRequire.resolve("three")), "three.module.js")));
 
 function rotateY(x, y, z, yaw) {
   const cosine = Math.cos(yaw);
@@ -384,4 +387,65 @@ test("the road ribbon faces up and disposal releases it once", () => {
   disposeCourse(course);
   assert.equal(disposed, 1);
   assert.throws(() => sampleCourse(course, 0), /disposed/);
+});
+
+test("ribbons preserve sampled edges, UVs and metadata on Halo's Three.js instance", () => {
+  for (const kind of ["open", "circuit", "figure-eight"]) {
+    for (const flat of [false, true]) {
+      const course = buildCourse({ seed: 9, kind });
+      if (flat) course.samples = course.samples.map((point) => ({ ...point, y: 0 }));
+      const before = structuredClone(course);
+      const segments = 64;
+      const surface = buildCourseSurface(course, { segmentCount: segments });
+      assert.deepEqual(Object.keys(surface), ["geometry"]);
+      const { geometry } = surface;
+      assert.ok(geometry instanceof BufferGeometry);
+      assert.equal(geometry.attributes.position.count, (segments + 1) * 2);
+      assert.equal(geometry.index.count, segments * 6);
+      const { position, normal, uv } = geometry.attributes;
+      for (let section = 0; section <= segments; section += 1) {
+        const sample = sampleCourse(course, section / segments * course.length);
+        for (const side of [0, 1]) {
+          const vertex = section * 2 + side;
+          const offset = (side ? 1 : -1) * course.halfWidth;
+          assert.ok(Math.abs(position.getX(vertex) - sample.position.x - sample.right.x * offset) < 1e-4);
+          assert.ok(Math.abs(position.getY(vertex) - sample.position.y) < 1e-4);
+          assert.ok(Math.abs(position.getZ(vertex) - sample.position.z - sample.right.z * offset) < 1e-4);
+          assert.equal(uv.getX(vertex), section / segments);
+          assert.equal(uv.getY(vertex), side);
+          assert.ok(normal.getY(vertex) > 0);
+        }
+      }
+      for (let triangle = 0; triangle < geometry.index.count; triangle += 3) {
+        const [a, b, c] = Array.from(geometry.index.array.slice(triangle, triangle + 3));
+        const normalY = (position.getZ(b) - position.getZ(a)) * (position.getX(c) - position.getX(a))
+          - (position.getX(b) - position.getX(a)) * (position.getZ(c) - position.getZ(a));
+        assert.ok(normalY > 0, `${kind} flat=${flat} triangle ${triangle / 3}`);
+      }
+      assert.deepEqual({ ...course, surface: null }, before);
+      disposeCourse(course);
+    }
+  }
+});
+
+test("rebuilding replaces geometry and disposes each allocation only once", () => {
+  for (const kind of ["open", "circuit"]) {
+    const course = buildCourse({ seed: 9, kind });
+    const first = buildCourseSurface(course);
+    let firstDisposed = 0;
+    first.geometry.addEventListener("dispose", () => { firstDisposed += 1; });
+    const second = buildCourseSurface(course, { segmentCount: 2 });
+    assert.notEqual(second.geometry, first.geometry);
+    assert.equal(course.surface, second);
+    assert.equal(firstDisposed, 1);
+    assert.equal(second.geometry.index.count, (course.closed ? 3 : 2) * 6);
+    let secondDisposed = 0;
+    second.geometry.addEventListener("dispose", () => { secondDisposed += 1; });
+    disposeCourse(course);
+    disposeCourse(course);
+    assert.equal(firstDisposed, 1);
+    assert.equal(secondDisposed, 1);
+    assert.equal(course.surface, null);
+    assert.throws(() => buildCourseSurface(course), /disposed/);
+  }
 });

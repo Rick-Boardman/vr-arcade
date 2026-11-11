@@ -1,6 +1,6 @@
 {
   "name": "@rb/arcade",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Shared game modules (audio, player presentation, seeded courses, racing, Magna game entry) over Halo and game-owned assets and policies",
   "type": "module",
   "exports": {
@@ -18,12 +18,12 @@
   },
   "engines": { "node": ">=24" },
   "peerDependencies": {
-    "@rb/halo": ">=0.2.5"
+    "@rb/halo": ">=0.3.1"
   },
   "peerDependenciesMeta": {
     "@rb/halo": { "optional": true }
   },
   "devDependencies": {
-    "@rb/halo": "github:Rick-Boardman/vr-halo#v0.2.5"
+    "@rb/halo": "github:Rick-Boardman/vr-halo#v0.3.1"
   }
 }
