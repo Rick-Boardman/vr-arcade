@@ -78,6 +78,7 @@ test("Gravacrest sweep fixtures fail the unchanged layouts", () => {
   assert.ok(manifest.counts["curvature-limit"] > 0);
   assert.ok(manifest.fixtures.length >= 2);
   for (const fixture of manifest.fixtures) {
+    assert.equal(fixture.closed, true, `${fixture.trackType} must include its closing segment`);
     const result = validateCourse(fixture, fixture.limits);
     assert.equal(result.ok, false);
     const kinds = kindsOf(result);
@@ -226,6 +227,31 @@ test("open travel starts along -Z and lanes are left then right", () => {
   assert.ok(Math.hypot(endX - end.x, endZ - end.z) < 1e-4);
   assert.ok(Math.hypot(endX - start.position.x, endZ - start.position.z) > 10);
   disposeCourse(course);
+});
+
+test("every ribbon cross-section keeps its width and closed seams meet", () => {
+  for (const kind of ["circuit", "figure-eight", "open"]) {
+    const course = buildCourse({ seed: 9, kind });
+    const segmentCount = 64;
+    const surface = buildCourseSurface(course, { segmentCount });
+    const positions = surface.geometry.attributes.position.array;
+    for (let section = 0; section <= segmentCount; section += 1) {
+      const offset = section * 6;
+      const width = Math.hypot(
+        positions[offset + 3] - positions[offset],
+        positions[offset + 4] - positions[offset + 1],
+        positions[offset + 5] - positions[offset + 2],
+      );
+      assert.ok(Math.abs(width - course.halfWidth * 2) < 1e-4, `${kind} section ${section}: ${width}`);
+    }
+    if (course.closed) {
+      for (let coordinate = 0; coordinate < 6; coordinate += 1) {
+        assert.ok(Math.abs(positions[coordinate] - positions[segmentCount * 6 + coordinate]) < 1e-4,
+          `${kind} seam coordinate ${coordinate}`);
+      }
+    }
+    disposeCourse(course);
+  }
 });
 
 test("the road ribbon faces up and disposal releases it once", () => {

@@ -27,30 +27,14 @@ function ribbonGeometry(course, segmentCount) {
       },
     },
     segmentCount,
-    createRoadCrossSection({ point, nextPoint }) {
-      return crossSection(point, {
-        x: nextPoint.x - point.x,
-        z: nextPoint.z - point.z,
-      }, course.halfWidth);
+    createRoadCrossSection({ point, progress }) {
+      // Halo wraps nextPoint at the final section. Use course travel instead:
+      // closed endpoints share a tangent; open endpoints keep their final tangent.
+      const { forward } = sampleCourse(course, progress * course.length);
+      return crossSection(point, forward, course.halfWidth);
     },
   });
   return built.geometry;
-}
-
-function writeVertex(positions, vertex, point) {
-  positions[vertex * 3] = point.x;
-  positions[vertex * 3 + 1] = point.y;
-  positions[vertex * 3 + 2] = point.z;
-}
-
-function repairOpenEnd(course, geometry, segmentCount) {
-  const end = sampleCourse(course, course.length).position;
-  const before = sampleCourse(course, course.length * ((segmentCount - 1) / segmentCount)).position;
-  const section = crossSection(end, { x: end.x - before.x, z: end.z - before.z }, course.halfWidth);
-  const positions = geometry.attributes.position.array;
-  writeVertex(positions, segmentCount * 2, section.leftPoint);
-  writeVertex(positions, segmentCount * 2 + 1, section.rightPoint);
-  geometry.attributes.position.needsUpdate = true;
 }
 
 function faceUp(geometry) {
@@ -83,7 +67,6 @@ export function buildCourseSurface(course, { segmentCount = 64 } = {}) {
     course.surface.geometry.dispose();
   }
   const geometry = ribbonGeometry(course, count);
-  if (!course.closed) repairOpenEnd(course, geometry, count);
   faceUp(geometry);
   course.surface = { geometry };
   return course.surface;

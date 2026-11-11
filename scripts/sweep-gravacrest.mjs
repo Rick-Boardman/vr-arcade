@@ -196,6 +196,7 @@ function consider(seed, selectedType, randomize) {
     selectedType,
     randomize,
     trackType,
+    closed: course.closed,
     halfWidth: paved,
     limits,
     samples,

@@ -22,7 +22,6 @@
     "@rb/halo": { "optional": true }
   },
   "devDependencies": {
-    "@rb/halo": "github:Rick-Boardman/vr-halo#v0.2.5",
-    "three": "0.160.1"
+    "@rb/halo": "github:Rick-Boardman/vr-halo#v0.2.5"
   }
 }

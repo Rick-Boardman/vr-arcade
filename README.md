@@ -24,7 +24,7 @@ Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-a
 </script>
 ```
 
-`./course` also needs `@rb/halo` at `>=0.2.5` on that import map (`@rb/halo/curve-surface` pointing at `node_modules`). Halo is an optional peer: audio and presentation install without it. A sibling checkout path is not a dependency. Keep a single Three.js instance, the one Halo peers. Arcade does not declare a Three.js dependency or peer, and no module imports it: presentation takes the game's `THREE` as an argument. The course surface calls Halo, and Halo imports that copy. Tests install `three@0.160.1` as a devDependency because that is the peer of Halo `v0.2.5`.
+`./course` also needs `@rb/halo` at `>=0.2.5` on that import map (`@rb/halo/curve-surface` pointing at `node_modules`). Halo is an optional peer: audio and presentation install without it. A sibling checkout path is not a dependency. Keep a single Three.js instance, the one Halo peers. Arcade does not declare a Three.js dependency or peer, and no module imports it: presentation takes the game's `THREE` as an argument. The course surface calls Halo, and Halo imports that copy. Tests resolve Three.js through Halo's peer dependency.
 
 ## Audio API
 
@@ -187,7 +187,7 @@ Up tilts with the road and stays above it. Right stays horizontal.
 
 ### Surface and disposal
 
-`buildCourseSurface(course)` builds the paved ribbon with Halo's `buildRoadSurfaceGeometry` and `createHorizontalCurveNormal`. The index order is flipped when the first triangle faces down, so the road is visible from above. Halo's sampler aims the last cross-section at the first point; for an open course the last cross-section is rewritten along the final tangent so the end does not turn back toward the start.
+`buildCourseSurface(course)` builds the paved ribbon with Halo's `buildRoadSurfaceGeometry` and `createHorizontalCurveNormal`. The index order is flipped when the first triangle faces down, so the road is visible from above. Every cross-section uses the course's sampled travel tangent. Closed endpoints share the same cross-section at the seam; open endpoints keep their final travel tangent.
 
 Course samples are plain data and hold no GPU resource. The geometry uses the Three.js constructor Halo already imported. `disposeCourse(course)` disposes that geometry and is safe to call twice. Sampling, lanes, and a new surface after disposal throw `arcade/course: disposed`. The game drops its mesh. Games still dispose their own materials.
 
