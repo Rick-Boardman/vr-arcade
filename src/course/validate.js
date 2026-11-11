@@ -124,6 +124,7 @@ function nearestApproach(point, a, b) {
   const z = a.z + abz * t;
   const y = a.y + (b.y - a.y) * t;
   return {
+    t,
     horizontal: Math.hypot(point.x - x, point.z - z),
     vertical: Math.abs(point.y - y),
   };

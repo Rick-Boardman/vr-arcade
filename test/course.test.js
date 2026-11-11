@@ -235,6 +235,61 @@ test("a sample on another segment is a crossing whatever the sampling", () => {
   assert.equal(overpass.ok, true, JSON.stringify(overpass.findings));
 });
 
+for (const fixture of [
+  {
+    name: "near-endpoint",
+    points: [[-10, 0], [10, 0], [10, 30], [-10, 30], [-10, 10], [0, 0.04]],
+    crossings: [{ sA: 10, sB: 90 + Math.hypot(10, 9.96) }],
+  },
+  {
+    name: "collinear",
+    points: [[-10, 0], [10, 0], [10, 20], [-10, 20], [-10, 0], [10, 0]],
+    // Both ends of the overlapping interval also touch the connecting segments.
+    crossings: [{ sA: 0, sB: 80 }, { sA: 20, sB: 100 }],
+  },
+]) {
+  test(`${fixture.name} fallback contacts have finite stations and accept intentional crossings`, () => {
+    for (const reverse of [false, true]) {
+      const flat = flatPath(fixture.points);
+      const raised = flat.map((point, index) => ({ ...point, y: index < 2 ? 0 : 8 }));
+      const length = flat.slice(1).reduce((sum, point, index) => sum + Math.hypot(
+        point.x - flat[index].x, point.z - flat[index].z,
+      ), 0);
+      const crossings = fixture.crossings.map((crossing) => reverse
+        ? { sA: length - crossing.sB, sB: length - crossing.sA }
+        : crossing);
+      if (reverse) {
+        flat.reverse();
+        raised.reverse();
+      }
+      const course = { closed: false, halfWidth: 1, samples: flat };
+      const rejected = validateCourse(course);
+      assert.equal(rejected.ok, false);
+      const hits = rejected.findings.filter((finding) => finding.kind === "accidental-self-intersection");
+      assert.ok(hits.length > 0, JSON.stringify(rejected.findings));
+      for (const hit of hits) {
+        assert.ok(Number.isFinite(hit.s), JSON.stringify(hit));
+        assert.doesNotMatch(hit.detail, /NaN|Infinity/);
+      }
+      assert.ok(hits.some((hit) => Math.abs(hit.s - crossings[0].sA) < 1e-8));
+
+      for (const intentional of [
+        { ...course, crossings },
+        { ...course, samples: raised },
+      ]) {
+        assert.equal(validateCourse(intentional).ok, true, JSON.stringify(intentional));
+        const accepted = validateCourse(intentional, { includeAccepted: true });
+        assert.equal(accepted.ok, true, JSON.stringify(accepted.findings));
+        assert.ok(accepted.findings.some((finding) => finding.kind === "intentional-crossing" && finding.accepted));
+        for (const finding of accepted.findings) {
+          assert.ok(Number.isFinite(finding.s), JSON.stringify(finding));
+          assert.doesNotMatch(finding.detail, /NaN|Infinity/);
+        }
+      }
+    }
+  });
+}
+
 test("one seed always builds the same course", () => {
   const first = buildCourse({ seed: 42, kind: "circuit" });
   const second = buildCourse({ seed: 42, kind: "circuit" });
