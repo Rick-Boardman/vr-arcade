@@ -1,0 +1,42 @@
+# Dependencies and local environments
+node_modules/
+.venv/
+venv/
+
+# Generated build, test, and tool output
+dist/
+build/
+coverage/
+test-results/
+playwright-report/
+.playwright-mcp/
+*.log
+*.tsbuildinfo
+
+# Scratch
+.scratchpad/
+
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.token
+credentials*.json
+settings.local.json
+
+# Editor and agent local state
+/.claude/
+/.codex/
+/.grok/
+/.vscode/
+/.idea/
+/.mcp.json
+
+# OS
+.DS_Store
+Thumbs.db
