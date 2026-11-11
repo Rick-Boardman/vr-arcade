@@ -189,6 +189,52 @@ test("an overpass crossing is accepted and a flat crossing is not", () => {
   assert.equal(kindsOf(declared).has("accidental-self-intersection"), false, JSON.stringify(declared.findings));
 });
 
+function flatPath(points, y = 0) {
+  return points.map(([x, z]) => ({ x, y, z }));
+}
+
+test("an open path checks its first and last segments against each other", () => {
+  const loop = [[-10, -10], [10, 10], [10, 30], [-10, 30], [-10, 10], [10, -10]];
+  const open = validateCourse({ closed: false, halfWidth: 1, samples: flatPath(loop) });
+  assert.ok(kindsOf(open).has("accidental-self-intersection"), JSON.stringify(open.findings));
+  const longer = validateCourse({ closed: false, halfWidth: 1, samples: flatPath([...loop, [20, -20]]) });
+  assert.ok(kindsOf(longer).has("accidental-self-intersection"), JSON.stringify(longer.findings));
+
+  const raised = flatPath(loop).map((sample, index) => (index === 0 ? { ...sample, y: 8 } : sample));
+  raised[1] = { ...raised[1], y: 8 };
+  const overpass = validateCourse({ closed: false, halfWidth: 1, samples: raised });
+  assert.equal(kindsOf(overpass).has("accidental-self-intersection"), false, JSON.stringify(overpass.findings));
+
+  const square = validateCourse({ closed: true, halfWidth: 1, samples: flatPath([[0, 0], [20, 0], [20, 20], [0, 20]]) });
+  assert.equal(kindsOf(square).has("accidental-self-intersection"), false, JSON.stringify(square.findings));
+});
+
+test("a sample on another segment is a crossing whatever the sampling", () => {
+  const plain = [[-10, -10], [10, 10], [10, 30], [-10, 30], [-10, 10], [10, -10], [20, -20]];
+  const resampled = [[-10, -10], [10, 10], [10, 30], [-10, 30], [-10, 10], [0, 0], [10, -10], [20, -20]];
+  for (const points of [plain, resampled]) {
+    const result = validateCourse({ closed: false, halfWidth: 1, samples: flatPath(points) });
+    const hits = result.findings.filter((finding) => finding.kind === "accidental-self-intersection");
+    assert.equal(hits.length, 1, JSON.stringify(result.findings));
+  }
+
+  // The contact is (0, 0): partway along the first segment, and sample 5 of the resampled path.
+  const samples = flatPath(resampled);
+  let station = 0;
+  for (let index = 0; index < 5; index += 1) {
+    station += Math.hypot(samples[index + 1].x - samples[index].x, samples[index + 1].z - samples[index].z);
+  }
+  const crossings = [{ sA: Math.hypot(10, 10), sB: station }];
+  const declared = validateCourse({ closed: false, halfWidth: 1, samples, crossings });
+  assert.equal(declared.ok, true, JSON.stringify(declared.findings));
+  const declaredAccepted = validateCourse({ closed: false, halfWidth: 1, samples, crossings }, { includeAccepted: true });
+  assert.ok(declaredAccepted.findings.some((finding) => finding.kind === "intentional-crossing" && finding.accepted));
+
+  const lifted = flatPath(resampled).map((sample, index) => (index <= 1 ? { ...sample, y: 8 } : sample));
+  const overpass = validateCourse({ closed: false, halfWidth: 1, samples: lifted });
+  assert.equal(overpass.ok, true, JSON.stringify(overpass.findings));
+});
+
 test("one seed always builds the same course", () => {
   const first = buildCourse({ seed: 42, kind: "circuit" });
   const second = buildCourse({ seed: 42, kind: "circuit" });

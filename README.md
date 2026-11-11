@@ -193,7 +193,7 @@ Course samples are plain data and hold no GPU resource. The geometry uses the Th
 
 ### Validation
 
-`validateCourse(course, limits)` checks the centerline. A failure `kind` is `cusp`, `accidental-self-intersection`, `width-limit`, `curvature-limit`, `scenery-clearance`, or `loop-seam`. An XZ crossing is accepted when the two road heights differ by at least 4 meters, or when `course.crossings` lists that pair of distances. A flat figure-eight without a declared crossing is rejected. `buildCourse` of kind `figure-eight` declares its overpass crossing and keeps the strands 8 meters apart.
+`validateCourse(course, limits)` checks the centerline. A failure `kind` is `cusp`, `accidental-self-intersection`, `width-limit`, `curvature-limit`, `scenery-clearance`, or `loop-seam`. Any XZ contact between two segments that do not share a sample counts, including a sample lying on another segment or within 5 centimeters of it, so resampling a polyline does not change the verdict; on an open path the first and last segments are checked against each other, and only a closed path joins them. An XZ crossing is accepted when the two road heights differ by at least 4 meters, or when `course.crossings` lists that pair of distances. A flat figure-eight without a declared crossing is rejected. `buildCourse` of kind `figure-eight` declares its overpass crossing and keeps the strands 8 meters apart.
 
 Default limits: a bend tighter than the fit half-width (the paved half-width, unless `fitHalfWidth` is set) is a width failure; a bend inside one extra meter is a curvature failure. Scenery closer than half a meter outside the paved edge, and within 3 meters of the road height, fails clearance.
 

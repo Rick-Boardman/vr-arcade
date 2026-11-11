@@ -66,24 +66,48 @@ function circumradiusXZ(a, b, c) {
   return (ab * bc * ca) / (2 * area2);
 }
 
-function crosses(a, b, c, d) {
+// XZ contact between segments AB and CD, endpoints included: a proper
+// crossing, or an endpoint of one within touchGap of the other segment
+// (which covers a vertex on another segment's interior and collinear overlap).
+// t and u are the contact's parameters along AB and CD.
+function contact(a, b, c, d, touchGap) {
   const rx = b.x - a.x;
   const rz = b.z - a.z;
   const sx = d.x - c.x;
   const sz = d.z - c.z;
   const denom = rx * sz - rz * sx;
-  if (Math.abs(denom) < 1e-9) return null;
-  const qpx = c.x - a.x;
-  const qpz = c.z - a.z;
-  const t = (qpx * sz - qpz * sx) / denom;
-  const u = (qpx * rz - qpz * rx) / denom;
-  const edge = 1e-6;
-  if (t <= edge || t >= 1 - edge || u <= edge || u >= 1 - edge) return null;
+  let hit = null;
+  if (Math.abs(denom) >= 1e-9) {
+    const qpx = c.x - a.x;
+    const qpz = c.z - a.z;
+    const t = (qpx * sz - qpz * sx) / denom;
+    const u = (qpx * rz - qpz * rx) / denom;
+    const edge = 1e-9;
+    if (t >= -edge && t <= 1 + edge && u >= -edge && u <= 1 + edge) {
+      hit = { t: Math.max(0, Math.min(1, t)), u: Math.max(0, Math.min(1, u)) };
+    }
+  }
+  if (!hit) {
+    const ends = [
+      [a, c, d, (u) => ({ t: 0, u })],
+      [b, c, d, (u) => ({ t: 1, u })],
+      [c, a, b, (t) => ({ t, u: 0 })],
+      [d, a, b, (t) => ({ t, u: 1 })],
+    ];
+    for (const [point, from, to, place] of ends) {
+      const approach = nearestApproach(point, from, to);
+      if (approach.horizontal <= touchGap) {
+        hit = place(approach.t);
+        break;
+      }
+    }
+  }
+  if (!hit) return null;
   return {
-    t,
-    u,
-    yA: a.y + t * (b.y - a.y),
-    yB: c.y + u * (d.y - c.y),
+    t: hit.t,
+    u: hit.u,
+    yA: a.y + hit.t * (b.y - a.y),
+    yB: c.y + hit.u * (d.y - c.y),
   };
 }
 
@@ -187,42 +211,31 @@ export function validateCourse(course, limits = {}) {
     }
   }
 
-  const vertexGap = 0.05;
-  for (let left = 0; left < samples.length; left += 1) {
-    for (let right = left + 1; right < samples.length; right += 1) {
-      const apart = Math.min(right - left, samples.length - (right - left));
-      if (apart < 2) continue;
-      const dx = samples[left].x - samples[right].x;
-      const dz = samples[left].z - samples[right].z;
-      if (dx * dx + dz * dz > vertexGap * vertexGap) continue;
-      const sA = measured.at[left] ?? 0;
-      const sB = measured.at[right] ?? 0;
-      const vertical = Math.abs(samples[left].y - samples[right].y);
-      const intentional = vertical >= resolved.overpassClearance
-        || declaredCrossing(course, sA, sB, resolved.crossingTolerance);
-      if (intentional && !resolved.includeAccepted) continue;
-      pushFinding(findings, counts, resolved, {
-        kind: intentional ? "intentional-crossing" : "accidental-self-intersection",
-        s: sA,
-        accepted: intentional,
-        detail: `samples meet in XZ at ${sA.toFixed(2)} and ${sB.toFixed(2)} with vertical gap ${vertical.toFixed(2)}`,
-      });
-    }
-  }
-
+  // Segments that share a sample are adjacent: consecutive segments, plus the
+  // closing segment and the first one on a closed course. An open course's
+  // first and last segments are not adjacent, so their contact is checked.
+  // Several segment pairs can report one contact (a vertex on another segment,
+  // or two coincident vertices); contacts at the same pair of stations count once.
+  const touchGap = 0.05;
+  const sameContact = touchGap * 2;
+  const contacts = [];
   for (let left = 0; left < measured.segmentCount; left += 1) {
     for (let right = left + 1; right < measured.segmentCount; right += 1) {
-      const separated = Math.min(right - left, measured.segmentCount - (right - left));
+      const linear = right - left;
+      const separated = closed ? Math.min(linear, measured.segmentCount - linear) : linear;
       if (separated < 2) continue;
       const a = samples[left];
       const b = samples[(left + 1) % samples.length];
       const c = samples[right];
       const d = samples[(right + 1) % samples.length];
-      const hit = crosses(a, b, c, d);
+      const hit = contact(a, b, c, d, touchGap);
       if (!hit) continue;
       const sA = measured.at[left] + measured.lengths[left] * hit.t;
       const sB = measured.at[right] + measured.lengths[right] * hit.u;
-      const intentional = Math.abs(hit.yA - hit.yB) >= resolved.overpassClearance
+      if (contacts.some((seen) => Math.abs(seen.sA - sA) <= sameContact && Math.abs(seen.sB - sB) <= sameContact)) continue;
+      contacts.push({ sA, sB });
+      const vertical = Math.abs(hit.yA - hit.yB);
+      const intentional = vertical >= resolved.overpassClearance
         || declaredCrossing(course, sA, sB, resolved.crossingTolerance);
       if (intentional && !resolved.includeAccepted) continue;
       pushFinding(findings, counts, resolved, {
@@ -231,7 +244,7 @@ export function validateCourse(course, limits = {}) {
         accepted: intentional,
         detail: intentional
           ? `crossing at ${sA.toFixed(2)} and ${sB.toFixed(2)}`
-          : `crossing at ${sA.toFixed(2)} and ${sB.toFixed(2)} with vertical gap ${Math.abs(hit.yA - hit.yB).toFixed(2)}`,
+          : `crossing at ${sA.toFixed(2)} and ${sB.toFixed(2)} with vertical gap ${vertical.toFixed(2)}`,
       });
     }
   }
