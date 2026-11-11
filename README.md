@@ -4,24 +4,27 @@
 
 ## Ownership
 
-Arcade owns reusable game rules and lifecycle: `./audio` and `./presentation` (in-world name tags, appearance on game meshes, and the lifecycle of remote players' presentation). Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and curve/surface primitives. Games own their worlds, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. Neither module has a backend dependency or creates cloud resources or recurring cost. Character geometry, wardrobe assets and identity policy (name uniqueness, storage, moderation) stay in the game; the lobby and its dresser are Magna's.
+Arcade owns reusable game rules and lifecycle: seeded courses, lanes, and map validation (`./course`), audio lifecycle (`./audio`), and `./presentation` (in-world name tags, appearance on game meshes, and the lifecycle of remote players' presentation). Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and the curve/surface primitives a road ribbon is built from. Games own their worlds, themes, buildings, trackside art, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. No module has a backend dependency or creates cloud resources or recurring cost. Character geometry, wardrobe assets and identity policy (name uniqueness, storage, moderation) stay in the game; the lobby and its dresser are Magna's.
 
-The owner-approved foundation is recorded in ticket `2026-11-09-arcade-library-foundation`. Seeded courses, map validation and their coordinate contracts arrive separately with `2026-11-09-arcade-course-map`. The backlog lives in the private `Rick-Boardman/nexus` repository at `backlog/tickets/<state>/<ticket>.md`.
+The owner-approved foundation is recorded in ticket `2026-11-09-arcade-library-foundation` (private backlog `Rick-Boardman/nexus`, file `backlog/tickets/<state>/2026-11-09-arcade-library-foundation.md`).
 
 ## Use
 
-After this PR is merged, the reviewer creates a release tag before any consumer adopts it. Pin the released tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-arcade#vX.Y.Z"` (replace `vX.Y.Z` with that tag). Browser ESM is shipped directly; no consumer bundler is required. Map the subpath to installed source:
+Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-arcade#vX.Y.Z"` and replace `vX.Y.Z` with that tag. Package version 0.3.0 adds the course module; the tag is cut from the merged pull request. Browser ESM is shipped directly; no consumer bundler is required. Map each subpath to installed source:
 
 ```html
 <script type="importmap">
-{"imports":{
-  "@rb/arcade/audio":"./node_modules/@rb/arcade/src/audio.js",
-  "@rb/arcade/presentation":"./node_modules/@rb/arcade/src/presentation.js"
-}}
+{
+  "imports": {
+    "@rb/arcade/audio": "./node_modules/@rb/arcade/src/audio.js",
+    "@rb/arcade/presentation": "./node_modules/@rb/arcade/src/presentation.js",
+    "@rb/arcade/course": "./node_modules/@rb/arcade/src/course.js"
+  }
+}
 </script>
 ```
 
-A sibling checkout path is not a dependency. Keep a single Three.js instance through Halo's peer dependency; neither module pins nor imports Three.js (presentation takes the game's `THREE` as an argument).
+`./course` also needs `@rb/halo` at `>=0.2.5` on that import map (`@rb/halo/curve-surface` pointing at `node_modules`). Halo is an optional peer: audio and presentation install without it. A sibling checkout path is not a dependency. Keep a single Three.js instance, the one Halo peers. Arcade does not declare a Three.js dependency or peer, and no module imports it: presentation takes the game's `THREE` as an argument. The course surface calls Halo, and Halo imports that copy. Tests resolve Three.js through Halo's peer dependency.
 
 ## Audio API
 
@@ -154,6 +157,48 @@ Which parts exist, their names, and what a look means (wardrobe tables, dresser 
 
 The module installs no listeners and runs no frame loop: the game calls `place` from Halo's frame loop. The party transport, slot assignment and pose schema stay in the game and Magna. No consumer is migrated by this change; garbage-can-race's `name-tag.js`, `looks.js` and `remotes.js` map onto `createNameTag`, its own wardrobe data with `createAppearance`, and `createRemotePresentation` with its rider builder as `create` and its course placement as `place`.
 
+## Course API
+
+```js
+import { buildCourse, buildCourseSurface, disposeCourse, sampleCourse } from "@rb/arcade/course";
+
+const course = buildCourse({ seed: 7, kind: "circuit", halfWidth: 7 });
+const surface = buildCourseSurface(course);
+// Add surface.geometry to a mesh in the game's scene, then:
+disposeCourse(course);
+```
+
+`buildCourse({ seed, kind, halfWidth, sampleCount })` returns the same samples for the same seed. `kind` is `circuit` (closed), `open`, or `figure-eight` (closed, with an overpass). `halfWidth` is the paved half-width in meters. The call throws if the generated course fails validation.
+
+### Coordinates
+
+Distances are meters. The world is Y-up and right-handed: Y is up, the ground plane is XZ. `course.length` is arc length along the centerline. `sampleCourse(course, s)` reads that distance. On a closed course `s` wraps, and `s === length` is the start. On an open course `s` clamps to `[0, length]`.
+
+Positive lateral is to the right of travel. That is Halo's horizontal normal, `(-forward.z, 0, forward.x)` on the ground. Check: travel `(0, 0, -1)` gives right `(1, 0, 0)`. `laneOffset(course, lane, laneCount)` uses the same sign. Lane 0 is the leftmost strip, so its offset is negative.
+
+A closed course joins the last sample to the first. That closing segment is the seam. Validation rejects a closing gap much longer than the other segments, and a turn at the join that is sharper than the rest of the loop. An open course has no closing segment. Its first step at heading 0 travels along world -Z, which is garbage-can-race's travel direction.
+
+`sampleCourse` returns `forward`, `right`, `up`, `yawGarbageCanRace`, and `yawGravacrest`.
+
+- `yawGarbageCanRace` aims a local **-Z** nose along the horizontal part of travel. Travel `(0, 0, -1)` is yaw 0. Travel `(1, 0, 0)` is yaw `-π/2`. This matches garbage-can-race `headingYaw` in `src/course.js`.
+- `yawGravacrest` aims a local **+Z** nose along that same horizontal direction. Travel `(0, 0, 1)` is yaw 0. This matches Gravacrest `runtime/arcade-track.js`, where yaw zero is +Z.
+
+Up tilts with the road and stays above it. Right stays horizontal.
+
+### Surface and disposal
+
+`buildCourseSurface(course)` builds the paved ribbon with Halo's `buildRoadSurfaceGeometry` and `createHorizontalCurveNormal`. The index order is flipped when the first triangle faces down, so the road is visible from above. Every cross-section uses the course's sampled travel tangent. Closed endpoints share the same cross-section at the seam; open endpoints keep their final travel tangent.
+
+Course samples are plain data and hold no GPU resource. The geometry uses the Three.js constructor Halo already imported. `disposeCourse(course)` disposes that geometry and is safe to call twice. Sampling, lanes, and a new surface after disposal throw `arcade/course: disposed`. The game drops its mesh. Games still dispose their own materials.
+
+### Validation
+
+`validateCourse(course, limits)` checks the centerline. A failure `kind` is `cusp`, `accidental-self-intersection`, `width-limit`, `curvature-limit`, `scenery-clearance`, or `loop-seam`. Any XZ contact between two segments that do not share a sample counts, including a sample lying on another segment or within 5 centimeters of it, so resampling a polyline does not change the verdict; on an open path the first and last segments are checked against each other, and only a closed path joins them. An XZ crossing is accepted when the two road heights differ by at least 4 meters, or when `course.crossings` lists that pair of distances. A flat figure-eight without a declared crossing is rejected. `buildCourse` of kind `figure-eight` declares its overpass crossing and keeps the strands 8 meters apart.
+
+Default limits: a bend tighter than the fit half-width (the paved half-width, unless `fitHalfWidth` is set) is a width failure; a bend inside one extra meter is a curvature failure. Scenery closer than half a meter outside the paved edge, and within 3 meters of the road height, fails clearance.
+
+`test/fixtures/gravacrest-sweep.json` records a sweep of Gravacrest `js/course-builders.js` at commit `6df876c9abfb8683b09a599bb24034d92fa90d01`. That generator has no seed argument, so the sweep replaced `Math.random` for each call with Mulberry32. Across 151 layouts it found width and curvature failures. It found no cusp, accidental self-intersection, scenery-clearance, or loop-seam failure, and the fixture file does not invent those. The committed failing layouts fail `validateCourse` again. `scripts/sweep-gravacrest.mjs` repeats the sweep when passed the path to that file. It is not part of the package consumers install.
+
 ## Validation and device coverage
 
 Use Node 24: `npm ci`, then `npm run build`. The build syntax-checks source/tests and runs Node's test runner; `npm pack --dry-run` verifies the installable source artifact. CI runs both. There is no transpilation output.
@@ -162,7 +207,7 @@ Presentation tests use Three.js and canvas doubles to cover texture rebinding, t
 
 ## Layout
 
-`src/audio.js` and `src/presentation.js` are the browser ESM modules, `test/audio.test.js` and `test/presentation.test.js` hold their tests, and `.github/workflows/build.yml` checks pull requests and branch pushes.
+`src/audio.js`, `src/presentation.js` and `src/course.js` (with `src/course/`) are the browser ESM modules. `test/audio.test.js`, `test/presentation.test.js` and `test/course.test.js` hold the Node tests. `.github/workflows/build.yml` checks pull requests and branch pushes.
 
 ## Constraints
 
