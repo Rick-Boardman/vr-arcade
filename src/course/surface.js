@@ -1,4 +1,4 @@
-import { buildRoadSurfaceGeometry, createHorizontalCurveNormal } from "@rb/halo/curve-surface";
+import { buildRibbonSurfaceGeometry, createHorizontalCurveNormal } from "@rb/halo/curve-surface";
 import { sampleCourse } from "./layout.js";
 
 function crossSection(point, tangent, halfWidth) {
@@ -14,51 +14,19 @@ function crossSection(point, tangent, halfWidth) {
       y: point.y,
       z: point.z + normal.z * halfWidth,
     },
-    leftNormal: { x: 0, y: 1, z: 0 },
-    rightNormal: { x: 0, y: 1, z: 0 },
   };
 }
 
 function ribbonGeometry(course, segmentCount) {
-  const built = buildRoadSurfaceGeometry({
-    curve: {
-      getPointAt(progress) {
-        return sampleCourse(course, progress * course.length).position;
-      },
-    },
-    segmentCount,
-    createRoadCrossSection({ point, progress }) {
-      // Halo wraps nextPoint at the final section. Use course travel instead:
-      // closed endpoints share a tangent; open endpoints keep their final tangent.
-      const { forward } = sampleCourse(course, progress * course.length);
-      return crossSection(point, forward, course.halfWidth);
-    },
-  });
-  return built.geometry;
-}
-
-function faceUp(geometry) {
-  const positions = geometry.attributes.position.array;
-  const index = geometry.index.array;
-  const ax = positions[index[0] * 3];
-  const az = positions[index[0] * 3 + 2];
-  const bx = positions[index[1] * 3];
-  const bz = positions[index[1] * 3 + 2];
-  const cx = positions[index[2] * 3];
-  const cz = positions[index[2] * 3 + 2];
-  const normalY = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
-  if (normalY < 0) {
-    for (let offset = 0; offset < index.length; offset += 3) {
-      const swap = index[offset + 1];
-      index[offset + 1] = index[offset + 2];
-      index[offset + 2] = swap;
-    }
-    geometry.index.needsUpdate = true;
+  const edgePairs = [];
+  for (let index = 0; index <= segmentCount; index += 1) {
+    const { position, forward } = sampleCourse(course, index / segmentCount * course.length);
+    edgePairs.push(crossSection(position, forward, course.halfWidth));
   }
-  geometry.computeVertexNormals();
+  return buildRibbonSurfaceGeometry(edgePairs, { closed: course.closed });
 }
 
-/** Allocate the paved ribbon on Halo's shared Three.js geometry. Closed and open paths both start from buildRoadSurfaceGeometry. */
+/** Allocate the paved ribbon on Halo's shared Three.js geometry with the course topology. */
 export function buildCourseSurface(course, { segmentCount = 64 } = {}) {
   if (!course || course.disposed) throw new Error("arcade/course: disposed");
   const count = segmentCount | 0;
@@ -66,8 +34,7 @@ export function buildCourseSurface(course, { segmentCount = 64 } = {}) {
   if (course.surface && course.surface.geometry && typeof course.surface.geometry.dispose === "function") {
     course.surface.geometry.dispose();
   }
-  const geometry = ribbonGeometry(course, count);
-  faceUp(geometry);
+  const geometry = ribbonGeometry(course, course.closed ? Math.max(3, count) : count);
   course.surface = { geometry };
   return course.surface;
 }
