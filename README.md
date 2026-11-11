@@ -4,13 +4,13 @@
 
 ## Ownership
 
-Arcade owns reusable game rules and lifecycle: seeded courses, lanes, and map validation (`./course`), audio lifecycle (`./audio`), and `./presentation` (in-world name tags, appearance on game meshes, and the lifecycle of remote players' presentation). Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and the curve/surface primitives a road ribbon is built from. Games own their worlds, themes, buildings, trackside art, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. No module has a backend dependency or creates cloud resources or recurring cost. Character geometry, wardrobe assets and identity policy (name uniqueness, storage, moderation) stay in the game; the lobby and its dresser are Magna's.
+Arcade owns reusable game rules and lifecycle: seeded courses, lanes, and map validation (`./course`), progress, laps, gaps, standings and finish (`./racing`), audio lifecycle (`./audio`), and `./presentation` (in-world name tags, appearance on game meshes, and the lifecycle of remote players' presentation). Halo owns the scene rig, frame loop, navigation, input, HUD, selection, WebXR, and the curve/surface primitives a road ribbon is built from. Games own their worlds, themes, buildings, trackside art, assets, licences, cue selection, and motion-to-pitch mapping. Magna owns lobby, matching, and the party client. No module has a backend dependency or creates cloud resources or recurring cost. Character geometry, wardrobe assets and identity policy (name uniqueness, storage, moderation) stay in the game; the lobby and its dresser are Magna's.
 
 The owner-approved foundation is recorded in ticket `2026-11-09-arcade-library-foundation` (private backlog `Rick-Boardman/nexus`, file `backlog/tickets/<state>/2026-11-09-arcade-library-foundation.md`).
 
 ## Use
 
-Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-arcade#vX.Y.Z"` and replace `vX.Y.Z` with that tag. Package version 0.3.0 adds the course module; the tag is cut from the merged pull request. Browser ESM is shipped directly; no consumer bundler is required. Map each subpath to installed source:
+Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-arcade#vX.Y.Z"` and replace `vX.Y.Z` with that tag. Package version 0.4.0 adds the racing module over the course contract released in v0.3.0; the tag is cut from the merged pull request. Browser ESM is shipped directly; no consumer bundler is required. Map each subpath to installed source:
 
 ```html
 <script type="importmap">
@@ -18,7 +18,8 @@ Pin a release tag in `package.json` as `"@rb/arcade": "github:Rick-Boardman/vr-a
   "imports": {
     "@rb/arcade/audio": "./node_modules/@rb/arcade/src/audio.js",
     "@rb/arcade/presentation": "./node_modules/@rb/arcade/src/presentation.js",
-    "@rb/arcade/course": "./node_modules/@rb/arcade/src/course.js"
+    "@rb/arcade/course": "./node_modules/@rb/arcade/src/course.js",
+    "@rb/arcade/racing": "./node_modules/@rb/arcade/src/racing.js"
   }
 }
 </script>
@@ -199,6 +200,50 @@ Default limits: a bend tighter than the fit half-width (the paved half-width, un
 
 `test/fixtures/gravacrest-sweep.json` records a sweep of Gravacrest `js/course-builders.js` at commit `6df876c9abfb8683b09a599bb24034d92fa90d01`. That generator has no seed argument, so the sweep replaced `Math.random` for each call with Mulberry32. Across 151 layouts it found width and curvature failures. It found no cusp, accidental self-intersection, scenery-clearance, or loop-seam failure, and the fixture file does not invent those. The committed failing layouts fail `validateCourse` again. `scripts/sweep-gravacrest.mjs` repeats the sweep when passed the path to that file. It is not part of the package consumers install.
 
+## Racing API
+
+```js
+import { createRace, raceProgress, courseGap } from '@rb/arcade/racing';
+import { sampleCourse } from '@rb/arcade/course';
+
+// course is a buildCourse() result. This example uses a closed course.
+const race = createRace({ course, laps: 3, direction: 1 });
+race.add('car-a', { time: 0 });
+race.add('car-b', { time: 0 });
+// The game supplies signed displacement from its own simulation, in meters.
+const state = race.advance('car-a', { delta: 12, time: 1 });
+const pose = sampleCourse(course, state.s);
+const rows = race.standings();
+const leadMeters = race.gap('car-a', 'car-b');
+const nearbyMeters = courseGap(course, state.s, race.get('car-b').s);
+```
+
+`raceProgress(course, distance, {laps = 1, direction = 1, start})` is pure. `course.length` is positive finite meters and `course.closed` is boolean, as released by `./course`. `distance` is signed, **unwrapped race meters from the start**, increasing toward the finish. It is not a wrapped station or a world position. Physics integration, projection onto the course, teleport/checkpoint validation and network authority stay with the game. A wrapped station alone cannot distinguish reverse travel from a forward lap or a multi-lap jump; supply the actual signed displacement to `advance` or accumulated race distance to `update`.
+
+The result has `distance`, course station `s` (pass to `sampleCourse`), signed `completedLaps`, `lapDistance`, clamped race `fraction`, `finished` and `total` meters. Closed courses wrap at exact equality, including multiple loops per update; backward travel undoes laps, so -1 meter on a 100-meter loop is lap -1 at station 99. `lapDistance` is the remainder within that lap. `direction: -1` races toward decreasing course stations while race distance still increases toward the finish; backing up has a negative delta in either direction. Direction changes the station, not the course's sampled tangent; reverse-facing meshes remain the game's responsibility.
+
+`start` is a course station in `[0, length]`, defaulting to 0 on loops and forward open runs, or `length` on reverse open runs. A loop's total is `length * laps` regardless of start. An open run finishes at its directional endpoint, uses exactly one lap, clamps display `s` to its endpoints, and must have positive distance from start to finish. Open `completedLaps` is 0 until finish and 1 thereafter; `lapDistance` is clamped race distance. The pure helper leaves `distance` unbounded and reports current finish status; it does not latch a finish.
+
+`courseGap(course, firstS, secondS)` returns the absolute physical along-course gap in meters, taking the shortest arc on a loop and clamping stations on an open course. It ignores laps, lateral/vertical separation and race direction. `race.gap(firstId, secondId)` instead returns signed race-distance separation including whole laps: positive means the first racer is ahead.
+
+`createRace({course, laps, direction, start, tieBreak})` snapshots these rules and returns:
+
+| Method | Contract |
+| --- | --- |
+| `add(id, {distance = 0, time = 0})` | Registers a unique nonempty string ID before the finish. Negative starting distances are allowed. Returns a snapshot. |
+| `update(id, {distance, time})` | Accepts absolute unwrapped race meters and a nonnegative sample time. Time cannot decrease for that racer. Returns a snapshot. |
+| `advance(id, {delta, time})` | Adds signed race meters, then applies `update`. |
+| `get(id)` | Returns a snapshot with progress fields, ID, sample `time` and nullable `finishTime`. |
+| `gap(firstId, secondId)` | Signed race meters; finished racers are held at `total`. |
+| `standings()` | Fresh snapshots with unique one-based `rank` and `gapToLeader` in meters. Finished racers come first by ascending finish time; running racers follow by descending race distance. |
+| `reset()` | Clears all racers and finish history so the ledger can be reused. |
+
+Use one monotonic time origin and unit for every racer (for example elapsed seconds). On the first sample reaching/passing `total`, the ledger linearly interpolates `finishTime` between the preceding sample and the crossing sample, then holds that racer at the finish permanently, even if later movement reverses. This assumes linear movement between samples; checkpoint qualification and other finish adjudication stay with the game, which decides which samples to submit. Equal sample times are allowed and yield that same finish time. Ledger snapshots of finishers use the crossing time for `time` too. Start a new race with `reset`.
+
+Equal race distances or finish times use `tieBreak(a, b)`, an optional standard sort comparator returning a finite number (negative puts `a` first). It receives isolated snapshots. Supply a pure, consistent comparator, for example one using a game-owned grid-slot table; an equal result falls back to ascending ID by JavaScript code-unit order, independent of insertion/arrival order or locale. Ties are exact; quantization, shared-place awards and points policy remain in the game. All finished racers have zero meter gap to each other; finish time determines their order.
+
+Invalid numbers, rules, IDs, unknown racers and decreasing timestamps throw with `arcade/racing:`. Invalid updates leave the ledger unchanged. The module imports no physics, renderer, transport or clock and holds no listeners, timers, or GPU resources: no disposal is needed. `reset` releases its racer entries; dropping the ledger releases all remaining state. Its course geometry snapshot survives the game's later `disposeCourse`; pure helpers reject a disposed course. Neither source game is migrated in this release.
+
 ## Validation and device coverage
 
 Use Node 24: `npm ci`, then `npm run build`. The build syntax-checks source/tests and runs Node's test runner; `npm pack --dry-run` verifies the installable source artifact. CI runs both. There is no transpilation output.
@@ -207,7 +252,7 @@ Presentation tests use Three.js and canvas doubles to cover texture rebinding, t
 
 ## Layout
 
-`src/audio.js`, `src/presentation.js` and `src/course.js` (with `src/course/`) are the browser ESM modules. `test/audio.test.js`, `test/presentation.test.js` and `test/course.test.js` hold the Node tests. `.github/workflows/build.yml` checks pull requests and branch pushes.
+`src/audio.js`, `src/presentation.js`, `src/course.js` (with `src/course/`) and `src/racing.js` are the browser ESM modules. Corresponding files in `test/` hold the Node tests, including racing seam/reverse travel, course sampling integration, finish order and configurable deterministic ties. `.github/workflows/build.yml` checks pull requests and branch pushes.
 
 ## Constraints
 
