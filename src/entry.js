@@ -110,9 +110,33 @@ export function createGameEntry(adapter, {
   let pendingLeave = null;
   let missingStart = false;
   let seedMismatch = false;
+  let tableRevision = 0;
+  let tableRequest = 0;
   const messages = [];
   const listeners = new Set();
   let status = 'connecting';
+
+  function inactive() {
+    return left || disposed || phase === 'failed';
+  }
+
+  function stopResources() {
+    clearTimer();
+    const stop = stopWatch;
+    stopWatch = null;
+    if (typeof stop === 'function') {
+      try { stop(); } catch (error) { reportFailure(hooks, error); }
+    }
+  }
+
+  function failEntry(error) {
+    phase = 'failed';
+    held = false;
+    pendingStart = false;
+    pendingLeave = null;
+    stopResources();
+    reportFailure(hooks, error);
+  }
 
   function live() {
     if (disposed) throw fail('disposed');
@@ -143,15 +167,15 @@ export function createGameEntry(adapter, {
       body: typeof line.body === 'string' ? line.body : '',
       createdAt: typeof line.createdAt === 'string' ? line.createdAt : '',
     });
+    messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
     return true;
   }
 
-  function replaceLines(lines) {
+  function mergeLines(lines) {
     if (!Array.isArray(lines)) {
       reportFailure(hooks, fail('messages must be an array'));
       return;
     }
-    messages.length = 0;
     for (const line of lines) rememberLine(line);
     publishChat();
   }
@@ -163,6 +187,7 @@ export function createGameEntry(adapter, {
   }
 
   function arm(ms) {
+    if (inactive() || phase !== 'entered') return;
     clearTimer();
     const delay = ms - now();
     if (delay <= 0) {
@@ -177,7 +202,7 @@ export function createGameEntry(adapter, {
   }
 
   function begin() {
-    if (started || left || disposed || announced == null || startsAtMs == null) return;
+    if (started || inactive() || phase !== 'entered' || announced == null || startsAtMs == null) return;
     if (now() < startsAtMs) {
       arm(startsAtMs);
       return;
@@ -197,11 +222,11 @@ export function createGameEntry(adapter, {
     }
     const late = now() >= startsAtMs;
     callHook(hooks, 'countdown', { startsAt: announced, startsAtMs, late, cancelled: false });
-    if (!left && !disposed) arm(startsAtMs);
+    if (!inactive() && phase === 'entered') arm(startsAtMs);
   }
 
   function considerStarts(startsAt) {
-    if (started || left || disposed) return;
+    if (started || inactive()) return;
     const key = startsAt || null;
     if (announced === key) return;
     if (key == null) {
@@ -243,7 +268,7 @@ export function createGameEntry(adapter, {
   }
 
   function requestLeave(reason) {
-    if (left || disposed) return;
+    if (inactive()) return;
     if (held) {
       pendingLeave = pendingLeave || reason;
       return;
@@ -255,12 +280,7 @@ export function createGameEntry(adapter, {
     if (left) return;
     left = true;
     phase = 'left';
-    clearTimer();
-    const stop = stopWatch;
-    stopWatch = null;
-    if (typeof stop === 'function') {
-      try { stop(); } catch (error) { reportFailure(hooks, error); }
-    }
+    stopResources();
     callHook(hooks, 'leave', { reason });
   }
 
@@ -290,13 +310,14 @@ export function createGameEntry(adapter, {
   }
 
   function onEvent(event) {
-    if (left || disposed || !event || typeof event !== 'object') return;
+    if (inactive() || !event || typeof event !== 'object') return;
     if (event.kind === 'message') {
       if (rememberLine(event.message)) publishChat();
       return;
     }
     if (!TABLE_EVENTS.has(event.kind)) return;
     if (event.code != null && event.code !== table.code) return;
+    tableRevision += 1;
     if (event.kind === 'countdown') {
       table = { ...table, phase: 'counting', startsAt: event.startsAt ?? null };
       if (event.seed != null && Number(event.seed) !== table.seed) {
@@ -333,21 +354,25 @@ export function createGameEntry(adapter, {
   }
 
   function onSnapshot() {
-    if (left || disposed) return;
-    Promise.resolve().then(() => adapter.read()).then(next => {
-      if (left || disposed) return;
-      adoptTable(next);
+    if (inactive()) return;
+    const revision = tableRevision;
+    const request = ++tableRequest;
+    Promise.resolve().then(() => inactive() ? null : adapter.read()).then(next => {
+      if (inactive()) return;
+      if (revision === tableRevision && request === tableRequest) adoptTable(next);
+      if (inactive()) return;
       status = 'live';
       return adapter.chat.messages();
     }).then(lines => {
-      if (left || disposed || lines == null) return;
-      replaceLines(lines);
+      if (inactive() || lines == null) return;
+      mergeLines(lines);
     }).catch(error => {
-      reportFailure(hooks, error);
+      if (!inactive()) reportFailure(hooks, error);
     });
   }
 
   function onStatus(next) {
+    if (inactive()) return;
     if (typeof next === 'string' && next.length) {
       status = next;
       publishChat();
@@ -355,6 +380,7 @@ export function createGameEntry(adapter, {
   }
 
   function onRefused() {
+    if (inactive()) return;
     status = 'offline';
     publishChat();
     reportFailure(hooks, fail('socket refused'));
@@ -390,27 +416,25 @@ export function createGameEntry(adapter, {
       if (disposed) return Promise.reject(fail('disposed'));
       if (phase !== 'prepared') return Promise.reject(fail('enter already called'));
       phase = 'entering';
+      held = true;
+      const revision = tableRevision;
+      const request = ++tableRequest;
       try {
         stopWatch = chat.watch({ event: onEvent, snapshot: onSnapshot, status: onStatus, refused: onRefused });
       } catch (error) {
-        phase = 'failed';
-        reportFailure(hooks, error);
+        failEntry(error);
         return Promise.reject(error);
       }
       if (typeof stopWatch !== 'function') {
-        phase = 'failed';
         const error = fail('watch must return an unsubscribe function');
-        reportFailure(hooks, error);
+        failEntry(error);
         return Promise.reject(error);
       }
-      held = true;
       let arrival;
       try {
         arrival = adapter.arrive();
       } catch (error) {
-        held = false;
-        phase = 'failed';
-        reportFailure(hooks, error);
+        failEntry(error);
         return Promise.reject(error);
       }
       return Promise.resolve(arrival).then(returned => {
@@ -423,13 +447,11 @@ export function createGameEntry(adapter, {
           throw fail(`left during entry (${reason})`);
         }
         if (!returned || typeof returned !== 'object' || Array.isArray(returned)) {
-          phase = 'failed';
           const error = fail('arrive returned no table');
-          reportFailure(hooks, error);
           throw error;
         }
         held = true;
-        adoptTable(returned);
+        if (revision === tableRevision && request === tableRequest) adoptTable(returned);
         const leaveNow = pendingLeave;
         pendingLeave = null;
         held = false;
@@ -446,9 +468,8 @@ export function createGameEntry(adapter, {
         return viewOf(identity, table, seat, chat);
       }).catch(error => {
         held = false;
-        if (phase === 'entering') phase = 'failed';
-        if (error && String(error.message || '').startsWith('arcade/entry:')) throw error;
-        reportFailure(hooks, error);
+        if (!inactive()) failEntry(error);
+        else reportFailure(hooks, error);
         throw error;
       });
     },

@@ -262,7 +262,8 @@ const entry = createGameEntry(handoff, {
     failure(error) {},
   },
 });
-const panel = createHudChatPanel(hud, { transport: entry.transport });
+// hudSystem and renderer belong to the game's Halo runtime.
+const panel = createHudChatPanel({ hudSystem, renderer, transport: entry.transport });
 await entry.enter(); // after the game has loaded and the player has entered VR
 ```
 
@@ -271,6 +272,8 @@ This integrates against Magna Play lobby release `61275e8c5542` (repository `web
 `createGameEntry` takes that handoff as its adapter. It does not construct a client, choose an endpoint, read a credential, or decide arrival timeout or room retention. Those stay in Play. `prepare` runs synchronously from the constructor. `enter` subscribes `chat.watch` once and then calls `arrive` once. A thrown or rejected `arrive` or `watch` is passed to `failure` and rejected to the caller; it is not called again. `entered` runs after a table comes back.
 
 Countdown and cancellation arrive as socket events (`countdown` carries `startsAt`; `countdown-cancelled` clears it). An `instance` event carries the room. A socket `snapshot` calls `read()` once for the current table and `messages()` once for the transcript. A rejected read is reported and is not repeated until Play delivers another snapshot. Nothing in this module polls. Every entered player arms `start` for that same `startsAt`. A duplicate event does not arm it again. A late event, one that arrives after `startsAt`, counts down with `late: true` and starts immediately. A different `startsAt` after `start` does not move the instant. A racing or counting table with no `startsAt` is a failure and does not invent a clock. A loading read that still has an empty `startsAt` does not erase a countdown the socket already delivered. `countdown-cancelled`, or a table whose phase is `waiting`, does.
+
+Arrival/watch failure is terminal: the watch and timer are released, pending callbacks are ignored, and no start can follow unsuccessful entry. HTTP table responses are applied only if no newer request or socket table event has intervened, so an older arrival/read cannot undo cancellation or a new countdown. Transcript snapshots merge by message id with live lines and sort by creation time, then id; delayed or overlapping snapshots cannot remove received messages.
 
 `leave()` and `dispose()` unsubscribe once and call `leave` with `leave` or `disposed`. A `closed` event, this player `left` or `dropped`, a missing seat, or a refused socket also leave, with that reason. `dispose` is safe to call twice. Later `enter` rejects.
 

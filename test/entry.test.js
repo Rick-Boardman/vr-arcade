@@ -111,6 +111,12 @@ function flush() {
   return new Promise(resolve => setImmediate(resolve));
 }
 
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 function entryFor(actor, at, overrides = {}) {
   const timing = clock(at);
   const { hooks, seen } = hooksOf();
@@ -319,4 +325,130 @@ test('a watch that throws is reported and arrive is not attempted', async () => 
   assert.equal(adapter.calls.arrive, 0);
   assert.deepEqual(seen.failure, [watchError]);
   await assert.rejects(entry.enter(), /enter already called/);
+});
+
+test('unsuccessful arrivals stop once and ignore retained watch callbacks and pending reads', async () => {
+  for (const mode of ['throw', 'reject', 'invalid']) {
+    const { entry, adapter, seen, timing } = entryFor('ada', START_MS - 1000);
+    const arrival = deferred();
+    const read = deferred();
+    const error = new Error(`arrival ${mode}`);
+    let callbacks;
+    const watch = adapter.chat.watch;
+    adapter.chat.watch = feed => { callbacks = feed; return watch(feed); };
+    adapter.read = () => read.promise;
+    adapter.arrive = () => {
+      if (mode === 'throw') throw error;
+      return arrival.promise;
+    };
+    const pending = entry.enter();
+    const rejected = assert.rejects(pending, mode === 'invalid' ? /arrive returned no table/ : error);
+    callbacks.snapshot();
+    callbacks.event({ kind: 'countdown', code: 'ABCD', startsAt: START });
+    if (mode === 'reject') arrival.reject(error);
+    if (mode === 'invalid') arrival.resolve(null);
+    await rejected;
+    read.resolve(table({ phase: 'counting', startsAt: START }));
+    callbacks.event({ kind: 'countdown', code: 'ABCD', startsAt: START });
+    callbacks.status('live');
+    callbacks.refused();
+    await flush();
+    timing.advance(5000);
+    assert.equal(entry.state.phase, 'failed');
+    assert.equal(seen.failure.length, 1);
+    assert.equal(seen.entered.length, 0);
+    assert.equal(seen.start.length, 0);
+    assert.equal(seen.countdown.length, 0);
+    assert.equal(adapter.calls.stop, 1);
+    assert.equal(timing.pending, 0);
+    entry.dispose();
+    entry.dispose();
+    assert.equal(adapter.calls.stop, 1);
+  }
+});
+
+test('older arrival and snapshot responses cannot undo socket cancellation or a newer countdown', async () => {
+  const later = '2026-11-11T15:00:20.000Z';
+  for (const source of ['arrival', 'snapshot']) {
+    for (const change of ['cancel', 'reschedule']) {
+      const response = deferred();
+      const { entry, adapter, seen, timing } = entryFor('ada', START_MS - 1000);
+      let pending;
+      if (source === 'arrival') {
+        adapter.arrive = () => response.promise;
+        pending = entry.enter();
+      } else {
+        await entry.enter();
+        adapter.read = () => response.promise;
+        adapter.snapshot();
+        await flush();
+      }
+      adapter.emit({ kind: 'countdown', startsAt: START });
+      adapter.emit(change === 'cancel'
+        ? { kind: 'countdown-cancelled' }
+        : { kind: 'countdown', startsAt: later });
+      response.resolve(table({ phase: 'counting', startsAt: START }));
+      await pending;
+      await flush();
+      timing.advance(1000);
+      assert.equal(seen.start.length, 0);
+      assert.equal(entry.state.startsAt, change === 'cancel' ? null : later);
+      timing.advance(5000);
+      assert.equal(seen.start.length, change === 'cancel' ? 0 : 1);
+      assert.equal(seen.entered.length, 1);
+      entry.dispose();
+    }
+  }
+});
+
+test('overlapping table reads prefer the newest request regardless of completion order', async () => {
+  for (const order of [[0, 1], [1, 0]]) {
+    const { entry, adapter, seen, timing } = entryFor('ada', START_MS - 1000);
+    await entry.enter();
+    const reads = [deferred(), deferred()];
+    let index = 0;
+    adapter.read = () => reads[index++].promise;
+    adapter.snapshot();
+    adapter.snapshot();
+    await flush();
+    for (const i of order) {
+      reads[i].resolve(i === 0 ? table({ phase: 'counting', startsAt: START }) : table({ phase: 'waiting' }));
+      await flush();
+    }
+    timing.advance(5000);
+    assert.equal(seen.start.length, 0);
+    assert.equal(entry.state.startsAt, null);
+    entry.dispose();
+  }
+});
+
+test('delayed and overlapping transcripts retain live messages in chronological order', async () => {
+  const { entry, adapter } = entryFor('ada', START_MS);
+  await entry.enter();
+  const responses = [deferred(), deferred(), deferred()];
+  let index = 0;
+  adapter.chat.messages = () => responses[index++].promise;
+  let latest;
+  entry.transport.subscribe(payload => { latest = payload; });
+  adapter.snapshot();
+  await flush();
+  adapter.snapshot();
+  await flush();
+  const line = (id, createdAt) => ({ id, createdAt, authorUserId: 'ada', body: id });
+  const recent = line('new', '2026-11-11T15:00:20.000Z');
+  const old = line('old', START);
+  adapter.emit({ kind: 'message', message: recent });
+  responses[1].resolve([recent, old]);
+  await flush();
+  responses[0].resolve([]);
+  await flush();
+  assert.deepEqual(latest.messages, [old, recent]);
+  adapter.snapshot();
+  await flush();
+  const newest = line('newest', '2026-11-11T15:00:25.000Z');
+  adapter.emit({ kind: 'message', message: newest });
+  responses[2].resolve([old, recent]);
+  await flush();
+  assert.deepEqual(latest.messages, [old, recent, newest]);
+  entry.dispose();
 });
