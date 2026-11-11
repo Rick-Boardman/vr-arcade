@@ -291,8 +291,16 @@ test('chat transport follows the socket, ignores duplicate lines, and names seat
   const live = seen.at(-1);
   assert.equal(live.status, 'live');
   assert.deepEqual(live.messages, [line]);
-  assert.equal(live.watching, true);
+  assert.equal(live.watching, 2);
+  assert.equal(typeof seen[0].watching, 'number');
   assert.equal(live.hasMore, false);
+  const before = seen.length;
+  adapter.emit({ kind: 'instance', room: { code: 'ABCD', slots: [
+    { index: 0, actor: 'ada', displayName: 'Ada', role: 'player', arrived: true },
+    { index: 1, actor: null, displayName: '', role: 'player', arrived: false },
+  ] } });
+  assert.equal(seen.length, before + 1);
+  assert.equal(seen.at(-1).watching, 1);
   stop();
   adapter.emit({ kind: 'message', message: { id: 'm2', authorUserId: 'ada', body: 'go', createdAt: START } });
   assert.equal(seen.at(-1).messages.length, 1);

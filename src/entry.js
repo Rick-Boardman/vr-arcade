@@ -148,13 +148,22 @@ export function createGameEntry(adapter, {
     return next;
   }
 
-  function publishChat() {
-    const payload = {
+  // Halo's chat panel reads `watching` as a head count ("2 here"): the seated players at this table.
+  function seated() {
+    return table.slots.filter(slot => slot && typeof slot.actor === 'string' && slot.actor.length > 0).length;
+  }
+
+  function chatView() {
+    return {
       messages: messages.map(line => ({ ...line })),
       status,
-      watching: status === 'live',
+      watching: seated(),
       hasMore: false,
     };
+  }
+
+  function publishChat() {
+    const payload = chatView();
     for (const listener of [...listeners]) listener(payload);
   }
 
@@ -296,6 +305,7 @@ export function createGameEntry(adapter, {
       return;
     }
     const previousStarts = table.startsAt;
+    const previousSeated = seated();
     table = { ...table, ...copy(next), code: table.code };
     // A stale loading read must not wipe a countdown the socket already delivered.
     if (!next.startsAt && previousStarts && next.phase !== 'waiting') table.startsAt = previousStarts;
@@ -305,6 +315,7 @@ export function createGameEntry(adapter, {
       requestLeave('unseated');
       return;
     }
+    if (seated() !== previousSeated) publishChat();
     noteMissingStart();
     considerStarts(table.startsAt);
   }
@@ -392,12 +403,7 @@ export function createGameEntry(adapter, {
       live();
       if (typeof listener !== 'function') throw fail('listener must be a function');
       listeners.add(listener);
-      listener({
-        messages: messages.map(line => ({ ...line })),
-        status,
-        watching: status === 'live',
-        hasMore: false,
-      });
+      listener(chatView());
       return () => listeners.delete(listener);
     },
     send(text) {
